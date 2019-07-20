@@ -33,7 +33,14 @@ import com.google.ar.sceneform.Scene;
 import com.google.ar.sceneform.rendering.ModelRenderable;
 import com.google.ar.sceneform.ux.ArFragment;
 import com.google.ar.sceneform.ux.TransformableNode;
-
+import com.google.ar.core.Config;
+import com.google.ar.core.Config.CloudAnchorMode;
+import com.google.ar.core.Session;
+import com.google.ar.core.codelab.cloudanchor.helpers.CloudAnchorManager;
+import com.google.ar.core.codelab.cloudanchor.helpers.SnackbarHelper;
+import com.google.ar.core.Anchor.CloudAnchorState;
+import com.google.ar.core.codelab.cloudanchor.helpers.StorageManager;
+import com.google.ar.core.codelab.cloudanchor.helpers.ResolveDialogFragment;
 /**
  * Main Fragment for the Cloud Anchors Codelab.
  *
@@ -44,7 +51,10 @@ public class CloudAnchorFragment extends ArFragment {
   private Scene arScene;
   private AnchorNode anchorNode;
   private ModelRenderable andyRenderable;
-
+  private final CloudAnchorManager cloudAnchorManager = new CloudAnchorManager();
+  private final SnackbarHelper snackbarHelper = new SnackbarHelper();
+  private final StorageManager storageManager = new StorageManager();
+  private Button resolveButton;
   @Override
   @SuppressWarnings({"AndroidApiChecker", "FutureReturnValueIgnored"})
   public void onAttach(Context context) {
@@ -69,10 +79,17 @@ public class CloudAnchorFragment extends ArFragment {
     Button clearButton = rootView.findViewById(R.id.clear_button);
     clearButton.setOnClickListener(v -> onClearButtonPressed());
 
+
+    resolveButton = rootView.findViewById(R.id.resolve_button);
+    resolveButton.setOnClickListener(v -> onResolveButtonPressed());
+
     arScene = getArSceneView().getScene();
+    arScene.addOnUpdateListener(frameTime -> cloudAnchorManager.onUpdate());
+
     setOnTapArPlaneListener((hitResult, plane, motionEvent) -> onArPlaneTap(hitResult));
     return rootView;
   }
+
 
   private synchronized void onArPlaneTap(HitResult hitResult) {
     if (anchorNode != null) {
@@ -81,10 +98,21 @@ public class CloudAnchorFragment extends ArFragment {
     }
     Anchor anchor = hitResult.createAnchor();
     setNewAnchor(anchor);
+
+    resolveButton.setEnabled(false);
+
+    snackbarHelper.showMessage(getActivity(), "Now hosting anchor...");
+    cloudAnchorManager.hostCloudAnchor(
+            getArSceneView().getSession(), anchor, this::onHostedAnchorAvailable);
   }
 
+
+
   private synchronized void onClearButtonPressed() {
-    // Clear the anchor from the scene.
+    cloudAnchorManager.clearListeners();
+
+    resolveButton.setEnabled(true);
+
     setNewAnchor(null);
   }
 
@@ -114,4 +142,69 @@ public class CloudAnchorFragment extends ArFragment {
       andy.select();
     }
   }
+
+
+  protected Config getSessionConfiguration(Session session) {
+    Config config = super.getSessionConfiguration(session);
+    config.setCloudAnchorMode(CloudAnchorMode.ENABLED);
+    return config;
+  }
+
+
+  private synchronized void onHostedAnchorAvailable(Anchor anchor) {
+    CloudAnchorState cloudState = anchor.getCloudAnchorState();
+    if (cloudState == CloudAnchorState.SUCCESS) {
+      int shortCode = storageManager.nextShortCode(getActivity());
+      storageManager.storeUsingShortCode(getActivity(), shortCode, anchor.getCloudAnchorId());
+      snackbarHelper.showMessage(
+              getActivity(), "Cloud Anchor Hosted. Short code: " + shortCode);
+      setNewAnchor(anchor);
+    } else {
+      snackbarHelper.showMessage(getActivity(), "Error while hosting: " + cloudState.toString());
+    }
+  }
+
+
+
+
+  private synchronized void onResolveButtonPressed() {
+    ResolveDialogFragment dialog = ResolveDialogFragment.createWithOkListener(
+            this::onShortCodeEntered);;
+    dialog.show(getFragmentManager(), "Resolve");
+  }
+
+
+  private synchronized void onShortCodeEntered(int shortCode) {
+    String cloudAnchorId = storageManager.getCloudAnchorId(getActivity(), shortCode);
+    if (cloudAnchorId == null || cloudAnchorId.isEmpty()) {
+      snackbarHelper.showMessage(
+              getActivity(),
+              "A Cloud Anchor ID for the short code " + shortCode + " was not found.");
+      return;
+    }
+    resolveButton.setEnabled(false);
+    cloudAnchorManager.resolveCloudAnchor(
+            getArSceneView().getSession(),
+            cloudAnchorId,
+            anchor -> onResolvedAnchorAvailable(anchor, shortCode));
+  }
+
+  private synchronized void onResolvedAnchorAvailable(Anchor anchor, int shortCode) {
+    CloudAnchorState cloudState = anchor.getCloudAnchorState();
+    if (cloudState == CloudAnchorState.SUCCESS) {
+      snackbarHelper.showMessage(getActivity(), "Cloud Anchor Resolved. Short code: " + shortCode);
+      setNewAnchor(anchor);
+    } else {
+      snackbarHelper.showMessage(
+              getActivity(),
+              "Error while resolving anchor with short code "
+                      + shortCode
+                      + ". Error: "
+                      + cloudState.toString());
+      resolveButton.setEnabled(true);
+    }
+  }
+
+
+
 }
